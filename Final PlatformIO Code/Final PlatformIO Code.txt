@@ -1,0 +1,534 @@
+#include <Arduino.h>
+#include <stdlib.h>
+#include <stdio.h>
+//#include <avr/io.h>
+
+////////////////////////////
+//Initialisation_Structure//
+////////////////////////////
+typedef struct
+{
+  float Mesure;
+  byte Erreur;
+}capteur;
+
+typedef struct
+{
+  String Mesure;
+  byte Erreur;
+  float Moy_gliss;
+}capteur2;
+
+capteur capteur_temperature;
+capteur capteur_pression;
+capteur capteur_humidite;
+capteur capteur_luminosite;
+capteur2 capteur_GPS;
+
+/////////////////////////
+//Initialisation_BME280//
+/////////////////////////
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BME280.h>
+
+#define SEALEVELPRESSURE_HPA (1013.25)
+Adafruit_BME280 bme;
+
+////////////////////////////////////
+//Initialisation_luminosity_sensor//
+////////////////////////////////////
+const int analogPin=2; // Luminosity captor on A2 port on Grove Shield
+
+////////////////////////////
+//Initialisation_RTC_clock//
+////////////////////////////
+#include "DS1307.h"
+DS1307 clock;//define a object of DS1307 class RTC Clock on I2C port on Grove Shield
+#define MON 1
+#define TUE 2
+#define WED 3
+#define THU 4
+#define FRI 5
+#define SAT 6
+#define SUN 7
+
+///////////////////////////
+//Initialisation_Carte_SD//
+///////////////////////////
+#include <SPI.h>
+#include <SD.h>
+const int chipSelect = 4; // (SD card reader model)
+
+/////////////////////////
+//Initialisation_LEDRGB//
+/////////////////////////
+#include <ChainableLED.h>
+#define Num_LED 1
+ChainableLED leds(7, 8, Num_LED);
+
+//////////////////////
+//Initialisation_GPS//
+//////////////////////
+#include <SoftwareSerial.h>
+SoftwareSerial SoftSerial(5, 6 ); // Serial already used for serial communication GPS connected on D5 port on Grove Shield
+String gpsData;
+bool t;
+
+
+//////////////////////////
+//Initialisation_Boutons//
+//////////////////////////
+#define buton1 2
+#define buton2 3
+
+//////////////////////////////////
+//Initialisation_variables_modes//
+//////////////////////////////////
+bool standard = true;
+bool economy = false;
+bool configuration = false;
+bool maintenance = false;
+
+/////////////////////////////////
+//Initialisation_données_config//
+/////////////////////////////////
+int LOG_INTERVAL = 600;//10min en secondes puis converti en millisecondes quand appelé
+int FILE_MAX_SIZE = 2048; //2ko
+int TIMEOUT = 30000;      //30s
+
+
+//////////////////////////////////////
+//Initialisation_préalable_fonctions//
+//////////////////////////////////////
+float lecture_capteur_pression_atmos();
+float lecture_capteur_temperature();
+float lecture_capteur_humidite();
+String lecture_capteur_GPS();
+float lecture_luminosity_sensor();
+String getTime();
+void greenSwitch();
+void redSwitch();
+void config(int *LOG_INTERVAL, int *FILE_MAX_SIZE, int *TIMEOUT);
+void eco();
+void maint();
+void stockage(String * data);
+
+
+void setup() {
+  ///////////////Initialisation Port Serie///////////////
+  Serial.begin(9600);
+  while(!Serial){
+    ;//wait for serial port to connect. Needed for native USB port only
+  }
+  
+  ///////////////Initialisation BME280 sensor///////////////
+  if (!bme.begin(0x76)) {
+  Serial.println("Could not find a valid BME280 sensor, check wiring!");
+  while (1);
+  }
+  
+  ///////////////Initialisation RTC clock///////////////
+  clock.begin();
+  clock.fillByYMD(2021,10,17);//Oct 17, 2021
+  clock.fillByHMS(12,27,45);//12:27 45"
+  clock.fillDayOfWeek(SUN);//Sunday
+  clock.setTime();//write time to the RTC chip
+
+  ///////////////Initialisation Carte SD///////////////
+  Serial.print("Initializing SD card...");
+  // see if the card is present and can be initialized:
+  if (!SD.begin(chipSelect)) {
+    Serial.println("Card failed, or not present");
+    // don't do anything more:
+    while (1);
+  }
+  Serial.println("card initialized.");
+
+  ///////////////Initialisation Boutons///////////////
+  pinMode(buton1, INPUT_PULLUP);
+  pinMode(buton2, INPUT_PULLUP);
+
+  ///////////////Initialisation GPS///////////////
+  SoftSerial.begin(9600);
+
+  ///////////////Initialisation Interruptions///////////////
+  attachInterrupt(digitalPinToInterrupt(buton1), greenSwitch, FALLING);
+  attachInterrupt(digitalPinToInterrupt(buton2), redSwitch, FALLING);
+}
+
+void loop()
+{
+  if(standard == true)
+  {
+  ////////////////Allumage LED verte continue////////////////
+  leds.setColorHSB(0, 0.25, 1.0, 0.5);                                    //(byte, color, contrast, brightness)?
+
+  ///////////////Enregistrement dans structure et ligne horodatée///////////////
+  String dataString = "";
+  dataString+=getTime() + " ; ";
+
+  capteur_temperature.Mesure = lecture_capteur_temperature();
+  dataString+=String(capteur_temperature.Mesure);
+  dataString+="°C";
+  dataString+=" ; ";
+  
+  capteur_pression.Mesure = lecture_capteur_pression_atmos();
+  dataString+=String(capteur_pression.Mesure);
+  dataString+="hPa";
+  dataString+=" ; ";
+  
+  capteur_humidite.Mesure = lecture_capteur_humidite();
+  dataString+=String(capteur_humidite.Mesure);
+  dataString+="%";
+  dataString+=" ; ";
+  
+  capteur_luminosite.Mesure = lecture_luminosity_sensor();
+  dataString+=String(capteur_luminosite.Mesure);
+  dataString+=" ; ";
+  
+  capteur_GPS.Mesure = lecture_capteur_GPS();
+  dataString+=capteur_GPS.Mesure;
+
+  ///////////////Enregistrement ligne horodatee sur carte SD///////////////
+  stockage(&dataString);
+  delay(LOG_INTERVAL*100); //600000 équivaut à 10 minutes en millisecondes
+  }
+  else if(economy)
+  {
+    eco();
+  }
+  else if(configuration)
+  {
+    config(&LOG_INTERVAL, &FILE_MAX_SIZE, &TIMEOUT);
+  }
+  else if(maintenance)
+  {
+    maint();
+  }
+}
+
+///////////////Fonction lecture capteur pression atmosphérique///////////////
+float lecture_capteur_pression_atmos()
+{
+  float pression_atmos;
+  pression_atmos = (bme.readPressure() / 100.0F);
+  return(pression_atmos);
+}
+
+///////////////Fonction lecture capteur temperature///////////////
+float lecture_capteur_temperature()
+{
+  float temperature;
+  temperature = bme.readTemperature();
+  return(temperature);
+}
+
+///////////////Fonction lecture capteur humidite///////////////
+float lecture_capteur_humidite()
+{
+  float humidite;
+  humidite = bme.readHumidity();
+  return(humidite);
+}
+
+///////////////Fonction lecture GPS///////////////
+String lecture_capteur_GPS()
+{
+    gpsData="";
+     if (SoftSerial.available())                     // if data is coming from software serial port ==> data is coming from SoftSerial GPS
+     {
+      t=true;
+      while(t){
+        gpsData = SoftSerial.readStringUntil('\n');
+        if (gpsData.startsWith("$GPGGA",0)){
+          t=false; 
+        }
+      }
+     }
+     return(gpsData);
+}
+
+///////////////Fonction lecture capteur luminosite///////////////
+float lecture_luminosity_sensor()
+{
+  float luminosity;
+  luminosity = analogRead(analogPin);
+  return(luminosity);
+}
+
+///////////////Fonction recuperation chaine de caracteres du temps///////////////
+String getTime()
+{
+    String time="";
+    clock.getTime();
+    time+=String(clock.hour, DEC);
+    time+=String(":");
+    time+=String(clock.minute, DEC);
+    time+=String(":");
+    time+=String(clock.second, DEC);
+    time+=String("  ");
+    time+=String(clock.month, DEC);
+    time+=String("/");
+    time+=String(clock.dayOfMonth, DEC);
+    time+=String("/");
+    time+=String(clock.year+2000, DEC);
+    time+=String(" ");
+    time+=String(clock.dayOfMonth);
+    time+=String("*");
+    switch (clock.dayOfWeek)// Friendly printout the weekday
+    {
+        case MON:
+        time+=String("MON");
+        break;
+        case TUE:
+        time+=String("TUE");
+        break;
+        case WED:
+        time+=String("WED");
+        break;
+        case THU:
+        time+=String("THU");
+        break;
+        case FRI:
+        time+=String("FRI");
+        break;
+        case SAT:
+        time+=String("SAT");
+        break;
+        case SUN:
+        time+=String("SUN");
+        break;
+    }
+    time+=String(" ");
+    return time;
+}
+
+///////////////Fonction stockage ligne horodatée///////////////
+void stockage(String * dataString)
+{
+  //int i;
+  //int count = 0;
+  File dataFile = SD.open("data.txt", (O_WRITE | O_CREAT | O_READ | O_APPEND));
+  if(dataFile){
+    dataFile.println(*dataString);
+    //Difficultés sur le fait de copier et renommer le fichier
+    //if(sizeof(dataFile)>=FILE_MAX_SIZE){
+    //  count++;
+    //
+    //}
+    dataFile.close();
+  }
+  else
+  {
+    Serial.println("error opening data.txt");
+  }
+}
+
+///////////////Fonction ISR interruption bouton vert///////////////
+void greenSwitch()
+{
+  //initialisation debounce
+  static unsigned long lastInterruptG = 0;
+  unsigned long interruptTimeG = millis();
+  if(interruptTimeG - lastInterruptG > 200)
+  {
+    if(standard && interruptTimeG>5000)
+    {
+      standard = false;
+      economy = true;
+    }
+  }
+  lastInterruptG = interruptTimeG;
+}
+
+///////////////Fonction ISR interruption bouton rouge///////////////
+void redSwitch()
+{
+  //initialisation debounce
+  static unsigned long lastInterruptR = 0;
+  unsigned long interruptTimeR = millis();
+  if(interruptTimeR - lastInterruptR > 200)
+  {
+    if(interruptTimeR<=5000)
+    {
+      configuration = true;
+      standard = false;
+    }
+    else if(standard && interruptTimeR>5000)
+    {
+          maintenance = true;
+          standard = false;
+
+    }
+    else if(maintenance && interruptTimeR>5000) //revient mode standard et pas au mode précédent
+    {
+      maintenance = false;
+      standard = true;
+    }
+    else if(economy && interruptTimeR>5000)
+    {
+      standard = true;
+      economy = false;
+    }
+  }
+  lastInterruptR = interruptTimeR;
+}
+
+/////////////////////////////////////////
+///////////////MODE CONFIG///////////////
+/////////////////////////////////////////
+void config(int *LOG_INTERVAL, int *FILE_MAX_SIZE, int *TIMEOUT) //config mode
+{
+  //initialisation LED Jaune
+  leds.setColorHSB(0, 0.12, 1.0, 0.5);
+  Serial.println("Quel paramètre voulez-vous modifier? ");
+  unsigned long timer = millis();
+  while(Serial.available()==0){
+    if((millis()-timer)>=1800000){ //30 min en millisecondes puis revient au mode standard
+      configuration = false;
+      standard = true;
+      return;
+    }
+  }
+  if(Serial.available()>0){
+    int x = Serial.parseInt();
+    if(x == 1){ //1 correspond à LOG_INTERVALL
+      Serial.println("Entrez la nouvelle valeur");
+      while(Serial.available()==0){
+      ;
+      }
+      if(Serial.available()>0){
+        *LOG_INTERVAL = Serial.parseInt();
+        Serial.println(*LOG_INTERVAL);
+      }
+    }
+    else if(x == 2){ //2 correspond à FILE_MAX_SIZE
+      Serial.println("Entrez la nouvelle valeur");
+      while(Serial.available()==0){
+      ;
+      }
+      if(Serial.available()>0){
+        *FILE_MAX_SIZE = Serial.parseInt();
+        Serial.println(*FILE_MAX_SIZE);
+      }
+    }
+    else if(x == 3){ //3 correspond à TIME_OUT
+      Serial.println("Entrez la nouvelle valeur");
+      while(Serial.available()==0){
+      ;
+      }
+      if(Serial.available()>0){
+        *TIMEOUT = Serial.parseInt();
+        Serial.println(*TIMEOUT);
+      }
+    }
+  }
+}
+
+/////////////////////////////////////////
+/////////////////MODE ECO////////////////
+/////////////////////////////////////////
+void eco() //economy mode
+{
+  //initialisation LED Bleue
+  leds.setColorHSB(0, 0.5, 1.0, 0.5);
+  //initialisation variables
+  int x;
+  int result;
+  x=1;
+  result=x%2;
+  if(result == 1){        //si x=1, GPS mesuré
+  //stocke dans structure
+  String dataString = "";
+  dataString+=getTime() + " ; ";
+
+  capteur_temperature.Mesure = lecture_capteur_temperature();
+  dataString+=String(capteur_temperature.Mesure);
+  dataString+="°C";
+  dataString+=" ; ";
+  
+  capteur_pression.Mesure = lecture_capteur_pression_atmos();
+  dataString+=String(capteur_pression.Mesure);
+  dataString+="hPa";
+  dataString+=" ; ";
+  
+  capteur_humidite.Mesure = lecture_capteur_humidite();
+  dataString+=String(capteur_humidite.Mesure);
+  dataString+="%";
+  dataString+=" ; ";
+  
+  capteur_luminosite.Mesure = lecture_luminosity_sensor();
+  dataString+=String(capteur_luminosite.Mesure);
+  dataString+=" ; ";
+  
+  capteur_GPS.Mesure = lecture_capteur_GPS();
+  dataString+=capteur_GPS.Mesure;
+  //Enregistre dans le fichier
+  stockage(&dataString);
+  delay((LOG_INTERVAL * 100 * 2)); //LOG_INTERVAL * 2
+  }
+  else{                   //si x=0, GPS pas mesuré
+    //stocke dans structure
+    String dataString = "";
+    dataString+=getTime() + " ; ";
+
+    capteur_temperature.Mesure = lecture_capteur_temperature();
+    dataString+=String(capteur_temperature.Mesure);
+    dataString+="°C";
+    dataString+=" ; ";
+  
+    capteur_pression.Mesure = lecture_capteur_pression_atmos();
+    dataString+=String(capteur_pression.Mesure);
+    dataString+="hPa";
+    dataString+=" ; ";
+  
+    capteur_humidite.Mesure = lecture_capteur_humidite();
+    dataString+=String(capteur_humidite.Mesure);
+    dataString+="%";
+    dataString+=" ; ";
+  
+    capteur_luminosite.Mesure = lecture_luminosity_sensor();
+    dataString+=String(capteur_luminosite.Mesure);
+    //Enregistre dans le fichier
+    stockage(&dataString);
+    delay(LOG_INTERVAL * 100 * 2); //LOG_INTERVAL * 2
+  }
+
+}
+
+/////////////////////////////////////////
+////////////MODE MAINTENANCE/////////////
+/////////////////////////////////////////
+void maint() //maintenance mode
+{ 
+  //initialisation LED Orange
+  leds.setColorHSB(0, 0.045, 1.0, 0.5);
+  //stocke dans structure
+    String dataString = "";
+  dataString+=getTime() + " ; ";
+
+  capteur_temperature.Mesure = lecture_capteur_temperature();
+  dataString+=String(capteur_temperature.Mesure);
+  dataString+="°C";
+  dataString+=" ; ";
+  
+  capteur_pression.Mesure = lecture_capteur_pression_atmos();
+  dataString+=String(capteur_pression.Mesure);
+  dataString+="hPa";
+  dataString+=" ; ";
+  
+  capteur_humidite.Mesure = lecture_capteur_humidite();
+  dataString+=String(capteur_humidite.Mesure);
+  dataString+="%";
+  dataString+=" ; ";
+  
+  capteur_luminosite.Mesure = lecture_luminosity_sensor();
+  dataString+=String(capteur_luminosite.Mesure);
+  dataString+=" ; ";
+  
+  capteur_GPS.Mesure = lecture_capteur_GPS();
+  dataString+=capteur_GPS.Mesure;
+  Serial.println(dataString);
+  delay(LOG_INTERVAL * 100);
+}

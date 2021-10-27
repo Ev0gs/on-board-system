@@ -1,0 +1,70 @@
+Inclusion de toutes les bibliothèques liées aux capteurs
+
+Initialisation des variables globales
+
+typedef struct			//Initialisation structure
+{
+	char nom[12]
+	float mesure[10]
+	int erreur[10]
+	float moy_gliss
+}capteur
+
+
+void setup()
+	Serial.begin(9600)
+	Malloc structure pour Nb_capteur 	//pour chaque capteur donner un nom
+	Détection ouverture moniteur série
+	Détection SD card
+	Initialisation horloge
+	Initialisation interruption pour double bouton pour changer de mode
+	Initialisation fichier.txt config avec toutes les options
+	Si bouton rouge pressé(au démarrage d'où le choix du void setup()) alors accès mode configuration(appel fonction)
+
+void configuration()
+	While dernière action inférieure 30min
+		Accéder au fichier.txt config dans l'EEPROM
+		Modifier paramètres de config du fichier.txt si besoin via console série (UART)
+	Exit()
+
+
+void loop() 
+	initialisation dataString 	//variable qui stocke les données
+	Ajout du temps à la variable dataString
+	Ajout données capteur Température, Humidité, Pression à variable dataString
+	Ajout des données du capteur de luminosité à la variable dataString
+	Ajout des données GPS à la variable dataString
+	Ouverture fichier.txt sur carte SD en écriture
+	Détection si fichier.txt sur carte SD disponible
+	Si fichier.txt disponible, afficher les données dans le moniteur série puis fermer
+	Sinon afficher une erreur d'ouverture
+
+String getTime()
+	Récupération des données de temps pour horodater la ligne de données
+	return time
+
+void changeMode() 	//fonction exécutée lors de l'interruption 	//Penser au timer pour faire un système anti-rebonds
+	En fonction du bouton appuyé change le mode
+	Allumage LED en fonction du mode (Soit dans changeMode(), soit dans loop())
+
+void Economy()
+	Mesure GPS 1 fois sur 2
+	Temps entre toute autre mesure de quelconque capteur est multipliée par 2
+
+void Maintenance()
+	Arrêt écriture sur carte SD
+	Lecture dataString (soit des capteurs)
+	//Fermeture simple du fichier sur carte SD?
+	//Carte SD peut être retirée et remplacée en toute sécurité
+
+
+float moyenne()
+	pour chaque capteur:
+		Récupération toutes mesures effectuées
+		faire moyenne de ces mesures
+		return moyenne
+
+void gestionErreur() //peut varier?
+	vérification type erreur
+	Affichage LED
+

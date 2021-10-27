@@ -1,0 +1,116 @@
+#! /bin/bash
+
+printf "######################\n"
+printf "#   COMPIL ARDUINO   #\n"
+printf "######################\n"
+
+for i in "$@"
+do
+case $i in
+  f=*)
+    FOLDER="${i#*=}"
+  shift
+  ;;
+esac
+done
+
+echo $FOLDER
+cd $FOLDER
+ls -l
+
+cd ../
+
+if [ ! -d "$FOLDER" ];then
+  echo "Le dossier $FOLDER n'existe pas"
+  exit
+elif [ "$FOLDER" != '' ];then
+  printf 'P1'
+  cd $FOLDER
+  if [ ! -d ".tmp" ];then
+    mkdir .tmp
+  else
+    rm -rf ".tmp/"
+  fi
+  printf '.'
+  if [ ! -d "build" ];then
+    mkdir build
+  else
+    rm -rf ".build/"
+  fi
+  printf '.'
+  printf ' done [env ready]\n'
+else
+  echo 'Aucun dossier spécifié, indiquer f=<nom_du_dossier>'
+  exit
+fi
+
+
+
+for c in *.cpp; do
+    [ -f "$c" ] || break
+    avr-gcc -Os -DF_CPU=16000000UL -mmcu=atmega328p -c $c -o .tmp/${cpp%.*}.o
+    filesC="$filesC $c"
+done
+##echo $filesC
+
+
+printf 'P3'
+avr-gcc -DF_CPU=16000000UL -mmcu=atmega328p $filesC -o build/$FOLDER 2> /dev/null
+printf '. done [links]\n'
+
+
+printf 'P4'
+avr-objcopy -O ihex -R .eeprom build/$FOLDER build/$FOLDER.hex
+printf '. done [.hex]\n'
+
+
+printf "Voulez vous commencer le televersement ? [O]: "
+read -r TELEV
+if [[ $TELEV == 'N' ]];then
+    printf "Bye bye\n"
+    exit
+else
+    printf "Démarage du téléversement \n"
+    avrdude -F -V -c arduino -p ATMEGA328P -P /dev/ttyACM0 -b 115200
+fi
+
+#if [ $INIT == 1 ];then
+#  printf "INITIALISATION EN COURS\n"
+#  rm $FOLDER/.arduicesi
+#  echo "{" >> $FOLDER/.arduicesi
+#
+#  printf 'Quel type de carte utilisez-vous ? [atmega328p] '
+#  read -r TYPE
+#  if [[ $TYPE == '' ]];then
+#    TYPE="atmega328p"
+#  fi
+#  echo ' type: "'$TYPE'",' >> $FOLDER/.arduicesi
+#
+#  printf 'Quel port utilisez-vous ? [/dev/ttyS1]'
+#  read -r port
+#  if [[ $PORT == '' ]];then
+#    PORT="/dev/ttyS1"
+#  fi
+#
+#  echo ' port: "'$PORT'",' >> $FOLDER/.arduicesi
+#  echo "}" >> $FOLDER/.arduicesi
+#fi
+
+#GET CONFIGURATION
+
+#CONF_TYPE=$(grep -oP '(?<=type: ")[^"]*' $FOLDER/.arduicesi)
+#CONF_TYPE=$(grep -oP '(?<=port: ")[^"]*' $FOLDER/.arduicesi)
+
+#############
+# FUNCTIONS #
+#############
+# function cleanInsideFolder(){
+#   if [ "$1" != '' ];then
+#     rm -rf $1/*;
+#   else
+#     echo "error folder is null"
+#   fi
+# }
+
+# printf "Clean datas\n"
+# cleanInsideFolder ".tmp"
